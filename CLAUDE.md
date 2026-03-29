@@ -8,13 +8,18 @@ Open `index.html` directly in a browser — no build step, no server required. A
 
 ## Repository workflow
 
-After every meaningful change: commit with a descriptive message and push to `origin/main`.
+**After completing any meaningful unit of work — a new feature, a bug fix, a balance tweak — commit and push immediately.** Never leave work uncommitted. This keeps GitHub as a reliable checkpoint that can be reverted to at any time.
 
 ```bash
 git add <files>
 git commit -m "short imperative summary"
 git push
 ```
+
+Commit message rules:
+- Imperative mood, present tense: "Add enemy dash attack" not "Added" or "Adding"
+- One line summary; add a blank line + details only if the change is complex
+- Stage specific files by name — never `git add -A` blindly
 
 GitHub repo: https://github.com/yotamkamin/dead-zone-shooter
 
