@@ -41,6 +41,14 @@ const IFRAMES_DUR    = 1.2;
 const MAX_AMMO       = 30;
 const RELOAD_TIME    = 1.8;
 
+// ── Power-up definitions ─────────────────────────────────────
+const POWERUP_TYPES = {
+  rapid:  { label: 'RAPID FIRE',   color: '#00e5ff', glow: '#0099bb', duration: 8  },
+  speed:  { label: 'SPEED BOOST',  color: '#b2ff59', glow: '#66aa00', duration: 7  },
+  shield: { label: 'SHIELD',       color: '#ce93d8', glow: '#9c27b0', duration: 5  },
+  nuke:   { label: 'NUKE',         color: '#ff6e40', glow: '#dd2200', duration: 0  }, // instant
+};
+
 // ── Enemy type definitions ───────────────────────────────────
 const ENEMY_TYPES = {
   grunt: {
@@ -111,6 +119,9 @@ function makePlayer() {
     reloading: false, reloadTimer: 0,
     invincible: 0,
     velX: 0, velY: 0,
+    rapidFire: 0,
+    speedBoost: 0,
+    shield: 0,
   };
 }
 
@@ -127,6 +138,8 @@ function makeState() {
     menuTimer: 0,
     flashAlpha: 0,
     damageFlash: 0,
+    powerupTimer: 28,  // seconds until next arena power-up spawn
+    nukeFlash: 0,
   };
 }
 
@@ -209,7 +222,7 @@ function playerShoot() {
     life: 1.4, damage: 25, radius: 3,
   });
   p.ammo--;
-  p.shootCooldown = SHOOT_COOLDOWN;
+  p.shootCooldown = p.rapidFire > 0 ? SHOOT_COOLDOWN * 0.35 : SHOOT_COOLDOWN;
   p.shootFlash = 0.1;
   muzzleFlash(mx, my, angle);
   if (p.ammo === 0) startReload();
@@ -220,6 +233,20 @@ function startReload() {
   if (p.reloading) return;
   p.reloading = true;
   p.reloadTimer = RELOAD_TIME;
+}
+
+function triggerNuke() {
+  for (let i = state.enemies.length - 1; i >= 0; i--) {
+    const e = state.enemies[i];
+    const t = ENEMY_TYPES[e.type];
+    state.score += t.scoreValue;
+    burst(e.x, e.y, t.color, 12, 90, Math.PI * 2, 3);
+    burst(e.x, e.y, '#ff6e40', 6, 60, Math.PI * 2, 2);
+    state.enemies.splice(i, 1);
+  }
+  state.bullets = [];
+  state.nukeFlash = 0.5;
+  state.shake = 12;
 }
 
 // ── Update helpers ───────────────────────────────────────────
@@ -252,10 +279,17 @@ function killEnemy(i) {
   burst(e.x, e.y, '#ff6666', 5, 50, Math.PI * 2, 2);
   state.shake = Math.max(state.shake, e.type === 'tank' ? 6 : 3);
 
-  // Chance to drop pickup
+  // Chance to drop pickup or power-up
   const roll = Math.random();
-  if (roll < 0.12) state.pickups.push(spawnPickup(e.x, e.y, 'health'));
-  else if (roll < 0.28) state.pickups.push(spawnPickup(e.x, e.y, 'ammo'));
+  const powerupDropChance = e.type === 'tank' ? 0.18 : e.type === 'runner' ? 0.05 : 0.04;
+  if (roll < powerupDropChance) {
+    const kinds = ['rapid', 'speed', 'shield', 'nuke'];
+    state.pickups.push(spawnPickup(e.x, e.y, kinds[Math.floor(Math.random() * kinds.length)]));
+  } else if (roll < powerupDropChance + 0.12) {
+    state.pickups.push(spawnPickup(e.x, e.y, 'health'));
+  } else if (roll < powerupDropChance + 0.26) {
+    state.pickups.push(spawnPickup(e.x, e.y, 'ammo'));
+  }
 
   state.enemies.splice(i, 1);
 }
@@ -370,8 +404,9 @@ function updateGame(dt) {
   if (keys['ArrowUp']    || keys['KeyW']) dy -= 1;
   if (keys['ArrowDown']  || keys['KeyS']) dy += 1;
   if (dx !== 0 && dy !== 0) { dx *= 0.707; dy *= 0.707; }
-  p.x = Math.max(PLAYER_RADIUS, Math.min(W - PLAYER_RADIUS, p.x + dx * PLAYER_SPEED * dt));
-  p.y = Math.max(PLAYER_RADIUS, Math.min(H - PLAYER_RADIUS, p.y + dy * PLAYER_SPEED * dt));
+  const curSpeed = PLAYER_SPEED * (p.speedBoost > 0 ? 1.7 : 1);
+  p.x = Math.max(PLAYER_RADIUS, Math.min(W - PLAYER_RADIUS, p.x + dx * curSpeed * dt));
+  p.y = Math.max(PLAYER_RADIUS, Math.min(H - PLAYER_RADIUS, p.y + dy * curSpeed * dt));
 
   // Animation
   updatePlayerAnimation(p, dx !== 0 || dy !== 0, dt);
@@ -383,6 +418,24 @@ function updateGame(dt) {
   if (p.shootCooldown > 0) p.shootCooldown -= dt;
   if (p.shootFlash > 0)    p.shootFlash -= dt;
   if (p.invincible > 0)    p.invincible -= dt;
+  if (p.rapidFire > 0)     p.rapidFire   -= dt;
+  if (p.speedBoost > 0)    p.speedBoost  -= dt;
+  if (p.shield > 0)        p.shield      -= dt;
+  if (state.nukeFlash > 0) state.nukeFlash -= dt;
+
+  // Periodic arena power-up spawn
+  state.powerupTimer -= dt;
+  if (state.powerupTimer <= 0) {
+    const kinds = ['rapid', 'speed', 'shield', 'nuke'];
+    const kind = kinds[Math.floor(Math.random() * kinds.length)];
+    state.pickups.push(spawnPickup(
+      100 + Math.random() * (W - 200),
+      80  + Math.random() * (H - 160),
+      kind,
+    ));
+    state.powerupTimer = 25 + Math.random() * 15;
+  }
+
   if (p.reloading) {
     p.reloadTimer -= dt;
     if (p.reloadTimer <= 0) {
@@ -450,7 +503,7 @@ function updateGame(dt) {
     if (e.hitFlash > 0) e.hitFlash -= dt;
 
     // Damage player
-    if (p.invincible <= 0 && circleOverlap(e.x, e.y, t.size, p.x, p.y, PLAYER_RADIUS)) {
+    if (p.invincible <= 0 && p.shield <= 0 && circleOverlap(e.x, e.y, t.size, p.x, p.y, PLAYER_RADIUS)) {
       p.hp -= t.damage;
       p.invincible = IFRAMES_DUR;
       state.damageFlash = 0.25;
@@ -474,9 +527,26 @@ function updateGame(dt) {
     pk.pulse += dt * 4;
     if (pk.life <= 0) { state.pickups.splice(i, 1); continue; }
     if (circleOverlap(pk.x, pk.y, 10, p.x, p.y, PLAYER_RADIUS)) {
-      if (pk.kind === 'health') p.hp = Math.min(p.maxHp, p.hp + 30);
-      if (pk.kind === 'ammo')   { p.ammo = p.maxAmmo; p.reloading = false; }
-      burst(pk.x, pk.y, pk.kind === 'health' ? '#2ecc71' : '#f39c12', 8, 60, Math.PI * 2, 3);
+      const pu = POWERUP_TYPES[pk.kind];
+      if (pk.kind === 'health') {
+        p.hp = Math.min(p.maxHp, p.hp + 30);
+        burst(pk.x, pk.y, '#2ecc71', 8, 60, Math.PI * 2, 3);
+      } else if (pk.kind === 'ammo') {
+        p.ammo = p.maxAmmo; p.reloading = false;
+        burst(pk.x, pk.y, '#f39c12', 8, 60, Math.PI * 2, 3);
+      } else if (pk.kind === 'rapid') {
+        p.rapidFire = pu.duration;
+        burst(pk.x, pk.y, pu.color, 14, 80, Math.PI * 2, 3);
+      } else if (pk.kind === 'speed') {
+        p.speedBoost = pu.duration;
+        burst(pk.x, pk.y, pu.color, 14, 80, Math.PI * 2, 3);
+      } else if (pk.kind === 'shield') {
+        p.shield = pu.duration;
+        burst(pk.x, pk.y, pu.color, 14, 80, Math.PI * 2, 3);
+      } else if (pk.kind === 'nuke') {
+        triggerNuke();
+        burst(pk.x, pk.y, pu.color, 18, 100, Math.PI * 2, 4);
+      }
       state.pickups.splice(i, 1);
     }
   }
@@ -605,6 +675,36 @@ function drawPlayer(p) {
     ctx.beginPath();
     ctx.arc(p.x, p.y, PLAYER_RADIUS + 4, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.restore();
+  }
+
+  // Shield bubble
+  if (p.shield > 0) {
+    const sPulse = Math.sin(performance.now() * 0.005) * 2;
+    ctx.save();
+    ctx.globalAlpha = 0.25 + Math.abs(Math.sin(performance.now() * 0.004)) * 0.2;
+    ctx.fillStyle = '#ce93d8';
+    ctx.shadowColor = '#9c27b0';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, PLAYER_RADIUS + 10 + sPulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = '#ce93d8';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Speed boost trail
+  if (p.speedBoost > 0) {
+    ctx.save();
+    ctx.globalAlpha = 0.2;
+    ctx.fillStyle = '#b2ff59';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, PLAYER_RADIUS + 6, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 }
@@ -760,6 +860,7 @@ function renderPickups() {
     const r = 8 + pulse;
     ctx.save();
     ctx.globalAlpha = Math.min(1, pk.life * 0.5);
+
     if (pk.kind === 'health') {
       ctx.fillStyle = '#2ecc71';
       ctx.fillRect(pk.x - 5, pk.y - r, 10, r * 2);
@@ -768,12 +869,52 @@ function renderPickups() {
       ctx.lineWidth = 1;
       ctx.strokeRect(pk.x - 5, pk.y - r, 10, r * 2);
       ctx.strokeRect(pk.x - r, pk.y - 5, r * 2, 10);
-    } else {
+
+    } else if (pk.kind === 'ammo') {
       ctx.fillStyle = '#f39c12';
       ctx.fillRect(pk.x - r, pk.y - 4, r * 2, 8);
       ctx.fillStyle = '#e67e22';
       ctx.fillRect(pk.x - r + 2, pk.y - 2, (r - 2) * 2, 4);
+
+    } else {
+      // Power-up — glowing rotating gem
+      const pu = POWERUP_TYPES[pk.kind];
+      ctx.shadowColor = pu.glow;
+      ctx.shadowBlur = 14 + pulse * 2;
+      ctx.save();
+      ctx.translate(pk.x, pk.y);
+      ctx.rotate(pk.pulse * 0.5);
+      // Diamond outline
+      ctx.fillStyle = pu.color;
+      ctx.beginPath();
+      ctx.moveTo(0, -(r + 3));
+      ctx.lineTo(r + 3, 0);
+      ctx.lineTo(0, r + 3);
+      ctx.lineTo(-(r + 3), 0);
+      ctx.closePath();
+      ctx.fill();
+      // Inner gem
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha *= 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, -(r));
+      ctx.lineTo(r * 0.5, 0);
+      ctx.lineTo(0, r * 0.4);
+      ctx.lineTo(-r * 0.5, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      ctx.shadowBlur = 0;
+
+      // Label
+      ctx.globalAlpha = Math.min(0.9, pk.life * 0.5);
+      ctx.fillStyle = pu.color;
+      ctx.font = 'bold 8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(pu.label, pk.x, pk.y + r + 12);
+      ctx.textAlign = 'left';
     }
+
     ctx.restore();
   }
 }
@@ -840,6 +981,13 @@ function renderGame() {
   // Damage flash overlay
   if (state.damageFlash > 0) {
     ctx.fillStyle = `rgba(220,0,0,${Math.min(0.35, state.damageFlash * 1.4)})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Nuke flash overlay
+  if (state.nukeFlash > 0) {
+    const nf = state.nukeFlash / 0.5;
+    ctx.fillStyle = `rgba(255,110,64,${nf * 0.6})`;
     ctx.fillRect(0, 0, W, H);
   }
 
@@ -918,6 +1066,53 @@ function renderHUD() {
     ctx.stroke();
     ctx.restore();
   }
+
+  // Active power-up icons along bottom
+  const activePowerups = [
+    { kind: 'rapid',  timer: p.rapidFire,  max: POWERUP_TYPES.rapid.duration },
+    { kind: 'speed',  timer: p.speedBoost, max: POWERUP_TYPES.speed.duration },
+    { kind: 'shield', timer: p.shield,     max: POWERUP_TYPES.shield.duration },
+  ].filter(pw => pw.timer > 0);
+
+  const iconSize = 28;
+  const iconGap  = 8;
+  const startX   = W / 2 - (activePowerups.length * (iconSize + iconGap) - iconGap) / 2;
+  const iconY    = H - 14 - iconSize;
+
+  activePowerups.forEach((pw, i) => {
+    const pu = POWERUP_TYPES[pw.kind];
+    const ix = startX + i * (iconSize + iconGap);
+
+    // Background
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(ix, iconY, iconSize, iconSize);
+
+    // Timer bar
+    const ratio = pw.timer / pw.max;
+    ctx.fillStyle = pu.color;
+    ctx.fillRect(ix, iconY + iconSize - 4, iconSize * ratio, 4);
+
+    // Glow border
+    ctx.save();
+    ctx.shadowColor = pu.glow;
+    ctx.shadowBlur = 8;
+    ctx.strokeStyle = pu.color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(ix, iconY, iconSize, iconSize);
+    ctx.restore();
+
+    // Icon letter
+    ctx.fillStyle = pu.color;
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(pu.label[0], ix + iconSize / 2, iconY + iconSize / 2 + 5);
+
+    // Countdown
+    ctx.fillStyle = '#fff';
+    ctx.font = '8px monospace';
+    ctx.fillText(pw.timer.toFixed(1) + 's', ix + iconSize / 2, iconY + iconSize - 6);
+    ctx.textAlign = 'left';
+  });
 }
 
 function renderMenu() {
